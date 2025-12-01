@@ -7,10 +7,15 @@ import {
   Building2, 
   Users, 
   MessageSquare,
-  Settings
+  Settings,
+  BookMarked
 } from 'lucide-react';
 
-const Sidebar: React.FC = () => {
+interface SidebarProps {
+  onOpenUserBase: () => void;
+}
+
+const Sidebar: React.FC<SidebarProps> = ({ onOpenUserBase }) => {
   const iconClass = "w-6 h-6 text-gray-400 hover:text-white transition-colors cursor-pointer";
   
   return (
@@ -27,6 +32,13 @@ const Sidebar: React.FC = () => {
         <Clock className={iconClass} />
         <FolderOpen className="w-6 h-6 text-white cursor-pointer border-l-2 border-orange-500 pl-2 -ml-2.5" />
         <Calculator className={iconClass} />
+        <div className="w-8 h-[1px] bg-gray-700 my-1"></div>
+        <div title="Minha Base Própria" onClick={onOpenUserBase} className="cursor-pointer">
+          <BookMarked 
+            className={`${iconClass} hover:text-purple-400`} 
+          />
+        </div>
+        <div className="w-8 h-[1px] bg-gray-700 my-1"></div>
         <ListTodo className={iconClass} />
         <Building2 className={iconClass} />
         <Users className={iconClass} />

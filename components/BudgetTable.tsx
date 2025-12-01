@@ -26,7 +26,10 @@ import {
   Save,
   PlusCircle,
   Plus,
-  BookMarked
+  BookMarked,
+  Globe,
+  AlertCircle,
+  Copy
 } from 'lucide-react';
 import { BudgetItem, DatabaseItem, ItemType, SavedBlock } from '../types';
 import { MOCK_SEARCH_RESULTS, INITIAL_PROJECT_DATE } from '../constants';
@@ -34,7 +37,6 @@ import { searchConstructionItems } from '../services/geminiService';
 import VersionConflictModal from './VersionConflictModal';
 import ItemDetailsPanel from './ItemDetailsPanel';
 import BlockLibraryModal from './BlockLibraryModal';
-import UserDatabaseModal from './UserDatabaseModal';
 import DeleteConfirmationModal from './DeleteConfirmationModal';
 
 // --- TREE MANIPULATION HELPERS ---
@@ -128,7 +130,7 @@ const insertNodeInTree = (
     rootNodes: TreeNode[], 
     nodeToInsert: TreeNode, 
     targetId: string, 
-    mode: 'INSIDE' | 'AFTER'
+    mode: 'INSIDE' | 'AFTER' | 'BEFORE'
 ): TreeNode[] => {
   // Helper to recursively find target and insert
   const traverse = (nodes: TreeNode[]): TreeNode[] => {
@@ -144,8 +146,12 @@ const insertNodeInTree = (
              ...currentNode,
              children: [...currentNode.children, nodeToInsert]
           });
+        } else if (mode === 'BEFORE') {
+          // Add as sibling before
+          newNodes.push(nodeToInsert);
+          newNodes.push(currentNode);
         } else {
-          // Add as sibling after
+          // Add as sibling after (Default)
           newNodes.push(currentNode);
           newNodes.push(nodeToInsert);
         }
@@ -159,16 +165,6 @@ const insertNodeInTree = (
     }
     return newNodes;
   };
-
-  // Special case: if dropping AFTER a root node, we handle it at the top level
-  if (mode === 'AFTER') {
-     const targetIndex = rootNodes.findIndex(n => n.item.id === targetId);
-     if (targetIndex !== -1) {
-         const newRoots = [...rootNodes];
-         newRoots.splice(targetIndex + 1, 0, nodeToInsert);
-         return newRoots;
-     }
-  }
 
   return traverse(rootNodes);
 };
@@ -190,6 +186,7 @@ const sortItems = (items: BudgetItem[]) => {
 
 type PendingActionType = 'ADD_ROOT_STAGE' | 'ADD_SIBLING_STAGE' | 'ADD_CHILD_STAGE' | 'ADD_CHILD_ITEM' | 'ADD_SIBLING_ITEM' | 'REPLACE_ITEM' | null;
 type DensityType = 'compact' | 'normal' | 'comfortable';
+type DropPosition = 'before' | 'inside' | 'after' | null;
 
 interface PendingAction {
   targetId: string | null; // The ID of the item we clicked on (null if root)
@@ -203,7 +200,11 @@ interface DeleteState {
   childCount: number;
 }
 
-const BudgetTable: React.FC = () => {
+interface BudgetTableProps {
+  onAddToUserDb: (newItem: DatabaseItem) => void;
+}
+
+const BudgetTable: React.FC<BudgetTableProps> = ({ onAddToUserDb }) => {
   // --- State ---
   const [items, setItems] = useState<BudgetItem[]>([
     { id: '1', level: '1', description: 'SERVIÇOS PRELIMINARES', type: ItemType.SYNTHETIC, value: 16330 },
@@ -247,6 +248,7 @@ const BudgetTable: React.FC = () => {
   // Drag and Drop State
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [dropPosition, setDropPosition] = useState<DropPosition>(null);
 
   // Action State
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
@@ -269,16 +271,14 @@ const BudgetTable: React.FC = () => {
 
   // Block Library State
   const [savedBlocks, setSavedBlocks] = useState<SavedBlock[]>([
-    { id: 'b1', name: 'Kit Canteiro Padrão', createdAt: new Date().toISOString(), itemCount: 2, items: [] }
+    { id: 'b1', name: 'Kit Canteiro Padrão', createdAt: new Date().toISOString(), itemCount: 2, items: [], isGlobal: false }
   ]);
   const [isLibraryOpen, setIsLibraryOpen] = useState(false);
   const [isSaveBlockModalOpen, setIsSaveBlockModalOpen] = useState(false);
   const [blockNameInput, setBlockNameInput] = useState('');
+  const [isGlobalBlock, setIsGlobalBlock] = useState(false);
   const [tempBlockItems, setTempBlockItems] = useState<BudgetItem[] | null>(null);
-
-  // User Database State
-  const [userDatabase, setUserDatabase] = useState<DatabaseItem[]>([]);
-  const [isUserDbOpen, setIsUserDbOpen] = useState(false);
+  const [overwriteConflictId, setOverwriteConflictId] = useState<string | null>(null);
 
   const menuRef = useRef<HTMLDivElement>(null);
   const toolbarMenuRef = useRef<HTMLDivElement>(null);
@@ -396,29 +396,74 @@ const BudgetTable: React.FC = () => {
       }
   };
 
-  // --- Logic: Drag and Drop ---
+  // --- Logic: Drag and Drop (Enhanced) ---
 
   const handleDragStart = (e: React.DragEvent, item: BudgetItem) => {
       setDraggedItemId(item.id);
       e.dataTransfer.effectAllowed = 'move';
+      // Create a clean ghost image if needed, or rely on browser default
   };
 
   const handleDragOver = (e: React.DragEvent, targetItem: BudgetItem) => {
       e.preventDefault(); 
-      if (draggedItemId === targetItem.id) return;
+      if (!draggedItemId || draggedItemId === targetItem.id) return;
 
+      // Prevent dropping a parent into its own child
       const dragged = items.find(i => i.id === draggedItemId);
       if (dragged && targetItem.level.startsWith(dragged.level + '.')) {
+          setDragOverId(null);
+          setDropPosition(null);
           return;
       }
-      
+
       setDragOverId(targetItem.id);
+
+      // Geometry calculation for precise drop position
+      const rect = e.currentTarget.getBoundingClientRect();
+      const y = e.clientY - rect.top;
+      const height = rect.height;
+
+      // Logic:
+      // If Synthetic (Folder):
+      // - Top 25%: Insert Before
+      // - Middle 50%: Insert Inside
+      // - Bottom 25%: Insert After
+      // If Analytic (Item):
+      // - Top 50%: Insert Before
+      // - Bottom 50%: Insert After
+
+      if (targetItem.type === ItemType.SYNTHETIC) {
+          if (y < height * 0.25) {
+              setDropPosition('before');
+          } else if (y > height * 0.75) {
+              setDropPosition('after');
+          } else {
+              setDropPosition('inside');
+          }
+      } else {
+          if (y < height * 0.5) {
+              setDropPosition('before');
+          } else {
+              setDropPosition('after');
+          }
+      }
+  };
+
+  const handleDragLeave = () => {
+    // We intentionally don't clear immediately to avoid flickering, 
+    // unless we actually left the valid drop zones. 
+    // Usually handled by the next DragOver or Drop.
+    // However, if we leave the table area, we might want to clear.
   };
 
   const handleDrop = (e: React.DragEvent, targetItem: BudgetItem) => {
       e.preventDefault();
-      setDragOverId(null);
-      if (!draggedItemId || draggedItemId === targetItem.id) return;
+      
+      if (!draggedItemId || draggedItemId === targetItem.id) {
+        setDragOverId(null);
+        setDropPosition(null);
+        return;
+      }
 
       const draggedItem = items.find(i => i.id === draggedItemId);
       if (!draggedItem) return;
@@ -428,19 +473,38 @@ const BudgetTable: React.FC = () => {
       
       if (!draggedNode) {
           setDraggedItemId(null);
+          setDragOverId(null);
+          setDropPosition(null);
           return;
       }
 
-      let mode: 'INSIDE' | 'AFTER' = 'AFTER';
-      if (targetItem.type === ItemType.SYNTHETIC) {
-          mode = 'INSIDE';
+      // Determine insertion mode based on dropPosition state
+      let mode: 'INSIDE' | 'AFTER' | 'BEFORE' = 'AFTER';
+      
+      if (dropPosition) {
+          mode = dropPosition === 'inside' ? 'INSIDE' : (dropPosition === 'before' ? 'BEFORE' : 'AFTER');
+      } else {
+          // Fallback if dropPosition failed (shouldn't happen with correct DragOver)
+          mode = targetItem.type === ItemType.SYNTHETIC ? 'INSIDE' : 'AFTER';
       }
 
+      // Execute Insertion
       const newTree = insertNodeInTree(cleanedNodes, draggedNode, targetItem.id, mode);
       const newFlatList = flattenTree(newTree);
 
       setItems(newFlatList);
       setDraggedItemId(null);
+      setDragOverId(null);
+      setDropPosition(null);
+
+      // If dropped inside, ensure target is expanded
+      if (mode === 'INSIDE') {
+          setCollapsedIds(prev => {
+              const next = new Set(prev);
+              next.delete(targetItem.id);
+              return next;
+          });
+      }
   };
 
   // --- Logic: Level Calculation ---
@@ -553,24 +617,60 @@ const BudgetTable: React.FC = () => {
 
     setTempBlockItems(cleanedItems);
     setBlockNameInput(rootItem.description);
+    setIsGlobalBlock(false);
+    setOverwriteConflictId(null);
     setIsSaveBlockModalOpen(true);
   };
 
-  const confirmSaveBlock = () => {
+  const handleSaveBlockAttempt = () => {
     if (!tempBlockItems || !blockNameInput.trim()) return;
 
-    const newBlock: SavedBlock = {
-      id: Math.random().toString(36).substr(2, 9),
-      name: blockNameInput,
-      createdAt: new Date().toISOString(),
-      itemCount: tempBlockItems.length,
-      items: tempBlockItems
-    };
+    // Check for name conflict
+    const existingBlock = savedBlocks.find(b => b.name.toLowerCase() === blockNameInput.trim().toLowerCase());
 
-    setSavedBlocks(prev => [newBlock, ...prev]);
+    if (existingBlock) {
+      setOverwriteConflictId(existingBlock.id);
+    } else {
+      performSave('NEW');
+    }
+  };
+
+  const performSave = (mode: 'NEW' | 'OVERWRITE') => {
+    if (!tempBlockItems || !blockNameInput.trim()) return;
+
+    if (mode === 'OVERWRITE' && overwriteConflictId) {
+       setSavedBlocks(prev => prev.map(b => {
+         if (b.id === overwriteConflictId) {
+           return {
+             ...b,
+             items: tempBlockItems,
+             itemCount: tempBlockItems.length,
+             createdAt: new Date().toISOString(),
+             isGlobal: isGlobalBlock
+             // originalId keeps the same
+           };
+         }
+         return b;
+       }));
+    } else {
+      // NEW (or Fork)
+      const newBlock: SavedBlock = {
+        id: Math.random().toString(36).substr(2, 9),
+        name: blockNameInput,
+        createdAt: new Date().toISOString(),
+        itemCount: tempBlockItems.length,
+        items: tempBlockItems,
+        isGlobal: isGlobalBlock,
+        originalId: overwriteConflictId || undefined // Use the conflicting ID as origin if forking
+      };
+      setSavedBlocks(prev => [newBlock, ...prev]);
+    }
+
     setIsSaveBlockModalOpen(false);
     setTempBlockItems(null);
     setBlockNameInput('');
+    setOverwriteConflictId(null);
+    setIsGlobalBlock(false);
   };
 
   const handleDeleteBlock = (id: string) => {
@@ -638,14 +738,8 @@ const BudgetTable: React.FC = () => {
       date: new Date().toISOString()
     };
 
-    setUserDatabase(prev => [...prev, newItem]);
+    onAddToUserDb(newItem);
     setActiveMenuId(null);
-    // Optional: You could show a toast here
-    console.log('Saved to user database', newItem);
-  };
-
-  const handleDeleteUserDbItem = (id: string) => {
-    setUserDatabase(prev => prev.filter(i => i.id !== id));
   };
 
   // --- Handlers ---
@@ -945,13 +1039,13 @@ const BudgetTable: React.FC = () => {
         const isHovered = hoveredItemId === item.id;
         const isRoot = !item.level.includes('.');
         
+        // --- Drag & Drop Visual Styles ---
         let dropStyle = '';
-        if (isDragOver) {
-            if (isSynthetic) {
-                dropStyle = 'bg-blue-100 border-blue-300 shadow-inner'; 
-            } else {
-                dropStyle = 'border-b-2 border-blue-500';
+        if (isDragOver && dropPosition) {
+            if (dropPosition === 'inside') {
+                dropStyle = 'bg-blue-100 ring-2 ring-blue-500 ring-inset z-10'; 
             }
+            // For 'before' and 'after', we render a separate div line to avoid layout shifting or weird borders on the main row
         }
 
         const highlightStyle = isHighlighted ? 'bg-green-100 duration-1000 ease-out' : 'transition-colors duration-200';
@@ -969,11 +1063,20 @@ const BudgetTable: React.FC = () => {
                 draggable
                 onDragStart={(e) => handleDragStart(e, item)}
                 onDragOver={(e) => handleDragOver(e, item)}
+                onDragLeave={handleDragLeave}
                 onDrop={(e) => handleDrop(e, item)}
                 onMouseEnter={() => setHoveredItemId(item.id)}
                 onMouseLeave={() => setHoveredItemId(null)}
                 className={`group relative ${highlightStyle} ${isSelected && !isHighlighted ? 'bg-blue-50' : ''} ${draggedItemId === item.id ? 'opacity-40' : ''}`}
              >
+               {/* Drop Indicator Lines */}
+               {isDragOver && dropPosition === 'before' && (
+                   <div className="absolute top-0 left-0 right-0 h-0.5 bg-blue-600 z-20 pointer-events-none shadow-[0_1px_4px_rgba(37,99,235,0.5)]"></div>
+               )}
+               {isDragOver && dropPosition === 'after' && (
+                   <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 z-20 pointer-events-none shadow-[0_-1px_4px_rgba(37,99,235,0.5)]"></div>
+               )}
+
                <div className={`grid grid-cols-12 gap-4 px-4 items-center border-b border-gray-100 hover:bg-gray-50 transition-colors ${densityClass} ${isSynthetic ? 'font-bold text-gray-800 bg-gray-50/50' : 'text-gray-700'} ${dropStyle} ${isHighlighted ? 'bg-green-50' : ''}`}>
                   <div className="col-span-1 text-center flex items-center justify-center gap-2 text-sm text-gray-500 font-mono cursor-grab active:cursor-grabbing">
                     <GripVertical size={14} className="text-gray-300 group-hover:text-gray-400" />
@@ -986,7 +1089,7 @@ const BudgetTable: React.FC = () => {
                             onClick={() => toggleCollapse(item.id)}
                         >
                              {isCollapsed ? <ChevronRight size={16} className="text-gray-400"/> : <ChevronDown size={16} className="text-gray-400"/>}
-                             <Folder size={16} className="text-orange-500 fill-orange-50 flex-shrink-0" />
+                             <Folder size={16} className={`flex-shrink-0 ${isDragOver && dropPosition === 'inside' ? 'text-blue-500 fill-blue-50' : 'text-orange-500 fill-orange-50'}`} />
                         </div>
                     ) : (
                         <div 
@@ -1211,14 +1314,6 @@ const BudgetTable: React.FC = () => {
             <Package size={14}/> Bibliotecas
           </button>
 
-          {/* User Database Button */}
-          <button 
-            onClick={() => setIsUserDbOpen(true)}
-            className="flex items-center gap-1.5 hover:text-purple-600"
-          >
-            <BookMarked size={14}/> Minha Base
-          </button>
-
           <button className="flex items-center gap-1.5 hover:text-black"><MapIcon size={14}/> Mapa</button>
           
           <div className="relative" ref={toolbarMenuRef}>
@@ -1337,34 +1432,91 @@ const BudgetTable: React.FC = () => {
           onInsertBlock={insertTargetId ? handleInsertBlock : undefined}
        />
        
-       <UserDatabaseModal
-          isOpen={isUserDbOpen}
-          items={userDatabase}
-          onClose={() => setIsUserDbOpen(false)}
-          onDeleteItem={handleDeleteUserDbItem}
-       />
-
        {/* Save Block Name Input Modal */}
        {isSaveBlockModalOpen && (
          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-            <div className="bg-white rounded-lg shadow-xl w-96 p-4 animate-in fade-in zoom-in-95">
-                <div className="flex justify-between items-center mb-4">
-                    <h3 className="font-bold text-gray-800">Salvar Etapa como Bloco</h3>
+            <div className="bg-white rounded-lg shadow-xl w-[420px] p-0 animate-in fade-in zoom-in-95 overflow-hidden border border-gray-100">
+                <div className="px-5 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+                    <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                      <Package size={18} className="text-purple-600"/>
+                      Salvar Etapa como Bloco
+                    </h3>
                     <button onClick={() => setIsSaveBlockModalOpen(false)} className="text-gray-400 hover:text-gray-600"><X size={16}/></button>
                 </div>
-                <p className="text-xs text-gray-500 mb-3">Dê um nome ao seu bloco para identificá-lo na biblioteca. Os valores serão zerados.</p>
-                <input 
-                  type="text" 
-                  value={blockNameInput}
-                  onChange={(e) => setBlockNameInput(e.target.value)}
-                  placeholder="Ex: Kit Banheiro Padrão..."
-                  className="w-full border border-gray-300 rounded p-2 text-sm mb-4 focus:border-orange-500 outline-none bg-white"
-                  autoFocus
-                />
-                <div className="flex justify-end gap-2">
-                   <button onClick={() => setIsSaveBlockModalOpen(false)} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">Cancelar</button>
-                   <button onClick={confirmSaveBlock} className="px-3 py-1.5 text-sm bg-orange-600 text-white rounded hover:bg-orange-700 flex items-center gap-1"><Save size={14}/> Salvar Bloco</button>
+                
+                <div className="p-5">
+                    {/* Conflict View */}
+                    {overwriteConflictId ? (
+                        <div className="space-y-4">
+                           <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 flex gap-3">
+                              <AlertCircle className="text-orange-600 flex-shrink-0" size={20}/>
+                              <div className="text-sm">
+                                  <p className="font-bold text-orange-800">Bloco já existente</p>
+                                  <p className="text-orange-700 text-xs mt-1">
+                                    Já existe um bloco chamado <strong>"{blockNameInput}"</strong>. O que deseja fazer?
+                                  </p>
+                              </div>
+                           </div>
+                           <div className="flex flex-col gap-2">
+                              <button 
+                                onClick={() => performSave('OVERWRITE')} 
+                                className="w-full py-2 bg-white border border-gray-300 text-gray-700 rounded hover:bg-gray-50 text-sm font-medium flex items-center justify-center gap-2"
+                              >
+                                <RefreshCw size={14}/> Sobrescrever Existente
+                              </button>
+                              <button 
+                                onClick={() => performSave('NEW')} 
+                                className="w-full py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-medium flex items-center justify-center gap-2"
+                              >
+                                <Copy size={14}/> Salvar como Novo (Fork)
+                              </button>
+                           </div>
+                        </div>
+                    ) : (
+                        /* Normal View */
+                        <>
+                           <p className="text-xs text-gray-500 mb-3">
+                               O bloco será salvo na sua biblioteca pessoal. Os valores monetários serão zerados para reuso.
+                           </p>
+                           
+                           <label className="block text-xs font-bold text-gray-700 mb-1">Nome do Bloco</label>
+                           <input 
+                              type="text" 
+                              value={blockNameInput}
+                              onChange={(e) => setBlockNameInput(e.target.value)}
+                              placeholder="Ex: Kit Banheiro Padrão..."
+                              className="w-full border border-gray-300 rounded p-2 text-sm mb-4 focus:border-purple-500 outline-none bg-white focus:ring-1 focus:ring-purple-200"
+                              autoFocus
+                           />
+
+                           <label className="flex items-center gap-2 p-2 border border-gray-200 rounded bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors">
+                              <input 
+                                type="checkbox" 
+                                checked={isGlobalBlock}
+                                onChange={(e) => setIsGlobalBlock(e.target.checked)}
+                                className="rounded text-purple-600 focus:ring-purple-500 w-4 h-4"
+                              />
+                              <div className="flex-1">
+                                  <div className="text-sm font-medium text-gray-800 flex items-center gap-1">
+                                    <Globe size={14} className="text-gray-500"/> Tornar composição Global
+                                  </div>
+                                  <div className="text-[10px] text-gray-500">
+                                    Se marcado, este bloco ficará visível para todos os usuários da organização.
+                                  </div>
+                              </div>
+                           </label>
+                        </>
+                    )}
                 </div>
+
+                {!overwriteConflictId && (
+                  <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 flex justify-end gap-2">
+                     <button onClick={() => setIsSaveBlockModalOpen(false)} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-200 rounded">Cancelar</button>
+                     <button onClick={handleSaveBlockAttempt} className="px-3 py-1.5 text-sm bg-purple-600 text-white rounded hover:bg-purple-700 flex items-center gap-1 font-medium shadow-sm">
+                        <Save size={14}/> Salvar Bloco
+                     </button>
+                  </div>
+                )}
             </div>
          </div>
        )}

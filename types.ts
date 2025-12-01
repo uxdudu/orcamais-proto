@@ -44,6 +44,8 @@ export interface SavedBlock {
   createdAt: string;
   itemCount: number;
   items: BudgetItem[];
+  isGlobal: boolean; // Defines if visible to everyone
+  originalId?: string; // Origin ID if it is a fork
 }
 
 export interface ProjectMetadata {
