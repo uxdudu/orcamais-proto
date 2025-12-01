@@ -35,6 +35,7 @@ import VersionConflictModal from './VersionConflictModal';
 import ItemDetailsPanel from './ItemDetailsPanel';
 import BlockLibraryModal from './BlockLibraryModal';
 import UserDatabaseModal from './UserDatabaseModal';
+import DeleteConfirmationModal from './DeleteConfirmationModal';
 
 // --- TREE MANIPULATION HELPERS ---
 
@@ -196,6 +197,12 @@ interface PendingAction {
   suggestedLevel: string;
 }
 
+interface DeleteState {
+  isOpen: boolean;
+  item: BudgetItem | null;
+  childCount: number;
+}
+
 const BudgetTable: React.FC = () => {
   // --- State ---
   const [items, setItems] = useState<BudgetItem[]>([
@@ -246,6 +253,9 @@ const BudgetTable: React.FC = () => {
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [insertTargetId, setInsertTargetId] = useState<string | null>(null); // For Block Insert
   
+  // Delete State
+  const [deleteState, setDeleteState] = useState<DeleteState>({ isOpen: false, item: null, childCount: 0 });
+
   // Input values
   const [inputText, setInputText] = useState(''); // For Stages
   const [searchQuery, setSearchQuery] = useState(''); // For Items
@@ -483,6 +493,42 @@ const BudgetTable: React.FC = () => {
     }
 
     return '';
+  };
+
+  // --- Logic: Deletion ---
+
+  const initiateDelete = (itemId: string) => {
+    setActiveMenuId(null);
+    const itemToDelete = items.find(i => i.id === itemId);
+    if (!itemToDelete) return;
+
+    // Count children (items starting with "level.")
+    const children = items.filter(i => i.level.startsWith(itemToDelete.level + '.'));
+    
+    setDeleteState({
+      isOpen: true,
+      item: itemToDelete,
+      childCount: children.length
+    });
+  };
+
+  const confirmDelete = () => {
+    if (!deleteState.item) return;
+
+    const targetLevel = deleteState.item.level;
+    
+    // Remove item and all children
+    const remainingItems = items.filter(i => 
+      i.id !== deleteState.item!.id && !i.level.startsWith(targetLevel + '.')
+    );
+    
+    // Rebuild tree to fix numbering
+    const tree = buildTree(remainingItems);
+    const flattened = flattenTree(tree);
+
+    setItems(flattened);
+    setDeleteState({ isOpen: false, item: null, childCount: 0 });
+    setSelectedItemId(null); // Close details if open
   };
 
   // --- Logic: Blocks ---
@@ -1037,7 +1083,10 @@ const BudgetTable: React.FC = () => {
                                     </>
                                 )}
                                 <div className="border-t border-gray-100 my-1"></div>
-                                <button className="w-full px-4 py-2 text-left text-xs text-red-600 hover:bg-red-50 flex items-center gap-2">
+                                <button 
+                                  onClick={() => initiateDelete(item.id)}
+                                  className="w-full px-4 py-2 text-left text-xs text-red-600 hover:bg-red-50 flex items-center gap-2"
+                                >
                                     <Trash2 size={14}/> Excluir
                                 </button>
                             </div>
@@ -1269,6 +1318,15 @@ const BudgetTable: React.FC = () => {
           projectDate={INITIAL_PROJECT_DATE}
           onClose={() => setIsConflictModalOpen(false)}
           onConfirm={handleConflictResolution}
+       />
+
+       <DeleteConfirmationModal 
+          isOpen={deleteState.isOpen}
+          itemDescription={deleteState.item?.description || ''}
+          isSynthetic={deleteState.item?.type === ItemType.SYNTHETIC}
+          childCount={deleteState.childCount}
+          onClose={() => setDeleteState({ isOpen: false, item: null, childCount: 0 })}
+          onConfirm={confirmDelete}
        />
 
        <BlockLibraryModal 

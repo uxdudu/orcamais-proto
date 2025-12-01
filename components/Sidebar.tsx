@@ -1,6 +1,5 @@
 import React from 'react';
 import { 
-  LayoutGrid, 
   Clock, 
   FolderOpen, 
   Calculator, 
@@ -8,8 +7,7 @@ import {
   Building2, 
   Users, 
   MessageSquare,
-  Settings,
-  User
+  Settings
 } from 'lucide-react';
 
 const Sidebar: React.FC = () => {
@@ -18,9 +16,11 @@ const Sidebar: React.FC = () => {
   return (
     <div className="h-screen w-16 bg-[#0f172a] flex flex-col items-center py-4 border-r border-gray-800 flex-shrink-0 z-20">
       <div className="mb-8">
-        <div className="w-8 h-8 bg-orange-600 rounded flex items-center justify-center text-white font-bold">
-          <LayoutGrid size={18} />
-        </div>
+        <img 
+          src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230f172a'/%3E%3Crect x='14' y='14' width='16' height='16' rx='4' fill='%23ffffff'/%3E%3Crect x='34' y='14' width='16' height='16' rx='4' fill='%23ffffff'/%3E%3Crect x='14' y='34' width='16' height='16' rx='4' fill='%23ffffff'/%3E%3Crect x='34' y='34' width='16' height='16' rx='4' fill='%23ea580c'/%3E%3C/svg%3E" 
+          alt="Orçamais Logo" 
+          className="w-10 h-10 hover:opacity-90 transition-opacity cursor-pointer"
+        />
       </div>
       
       <div className="flex flex-col gap-6 flex-1 w-full items-center">
